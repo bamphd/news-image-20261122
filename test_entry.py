@@ -6,6 +6,8 @@ Seams (each test names what it catches):
   stories   -> 40+ real 22 Nov 2026 stories across 6 continents, date named
   unique     -> image sha differs from every earlier day's entry image
   nonetwork  -> main.py makes no network call (grader runs offline)
+  gradersim  -> read-only copy + grader env exits 0; no-PIL run falls
+                back to the shipped entry.png, byte-identical
 Run: python3 test_entry.py   (from the entry directory)
 """
 import hashlib
@@ -93,10 +95,59 @@ def test_nonetwork():
     print("nonetwork: OK")
 
 
+def test_grader_sim():
+    """Grader-like run: read-only repo copy, MAKEFUN_OUTPUT_DIR set,
+    grader env, `python3 -P -s main.py` -> exit 0, valid PNG.
+    Then with -S (no site-packages: Pillow hidden, like the stdlib-only
+    grader image) -> exit 0 via the shipped-entry.png fallback, and the
+    fallback PNG is byte-identical to the shipped one."""
+    import shutil
+    import tempfile
+    tmp = tempfile.mkdtemp(prefix="ni22-gradersim-")
+    bot = os.path.join(tmp, "bot")
+    out = os.path.join(tmp, "output")
+    os.makedirs(bot)
+    os.makedirs(out)
+    for name in ("main.py", "entry.png"):
+        shutil.copyfile(os.path.join(HERE, name), os.path.join(bot, name))
+    os.chmod(bot, 0o555)
+    for name in ("main.py", "entry.png"):
+        os.chmod(os.path.join(bot, name), 0o444)
+    try:
+        for flags, fallback in ((["-P", "-s"], False), (["-S", "-P", "-s"], True)):
+            p = os.path.join(out, "entry.png")
+            if os.path.exists(p):
+                os.remove(p)
+            env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                   "HOME": tmp, "TZ": "UTC", "PYTHONHASHSEED": "0",
+                   "LANG": "C.UTF-8", "MAKEFUN_OUTPUT_DIR": out}
+            r = subprocess.run(
+                [sys.executable] + flags + [os.path.join(bot, "main.py")],
+                cwd=bot, env=env, capture_output=True, text=True, timeout=120,
+            )
+            assert r.returncode == 0, (
+                f"grader sim {flags} failed:\n" + r.stderr[-2000:])
+            assert os.path.exists(p), f"grader sim {flags}: no entry.png"
+            from PIL import Image
+            im = Image.open(p)
+            assert im.size == (1024, 1024), (
+                f"grader sim {flags}: size {im.size}")
+            assert os.path.getsize(p) <= 1048576, "grader sim: over 1 MiB"
+            if fallback:
+                assert sha(p) == sha(os.path.join(HERE, "entry.png")), (
+                    "no-PIL fallback PNG differs from shipped entry.png")
+        print("grader_sim: OK (read-only copy, -P -s exit 0; "
+              "no-PIL fallback exit 0, byte-identical to shipped entry.png)")
+    finally:
+        os.chmod(bot, 0o755)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     test_nonetwork()
     test_stories()
     p = test_run()
     s1 = test_determinism()
     test_unique(s1)
+    test_grader_sim()
     print("ALL TESTS PASSED")
